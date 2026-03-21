@@ -1,19 +1,19 @@
 #!/usr/bin/env bun
 /**
- * AIien — Phase 1 Prototype Entry Point
+ * AIien — Phase 2 Prototype Entry Point
  *
- * Starts a game with:
- * - Hardcoded 5-room ship map
- * - Hardcoded Lurker alien
- * - 2-3 simulated players (random movement)
- * - Gemini Director making strategic decisions every 3s
- * - Spectator view at http://localhost:3000
- * - Decision logging for Director's Cut
+ * New in Phase 2:
+ * - Procedural ship generation (unique ship every run, seed-based)
+ * - AI-generated alien (Gemini creates unique alien per session)
+ * - Knowledge base (alien remembers players across sessions)
+ * - Alien evolution (Director can evolve alien mid-game)
  */
 
+import { generateShip } from "./game/ShipGenerator";
 import { createShipMap, printMap } from "./game/ShipMap";
 import { createInitialGameState, addPlayer } from "./game/GameState";
-import { LURKER_CARD } from "./ai/AlienCard";
+import { generateAlienCard } from "./ai/AlienGenerator";
+import { KnowledgeBase } from "./ai/KnowledgeBase";
 import { DirectorClient } from "./ai/DirectorClient";
 import { DecisionLogger } from "./logging/DecisionLogger";
 import { SpectatorServer } from "./spectator/SpectatorServer";
@@ -35,56 +35,139 @@ if (!GEMINI_API_KEY) {
   process.exit(1);
 }
 
-// ── Initialize ───────────────────────────────────────────────────
-console.log("╔══════════════════════════════════════════╗");
-console.log("║        AIien — Phase 1 Prototype         ║");
-console.log("╚══════════════════════════════════════════╝");
+// ── Parse CLI args ───────────────────────────────────────────────
+const args = process.argv.slice(2);
+const useProceduralShip = !args.includes("--static-map");
+const seed = args.find((a) => a.startsWith("--seed="))
+  ? parseInt(args.find((a) => a.startsWith("--seed="))!.split("=")[1])
+  : undefined;
+const playerNames = args.filter((a) => !a.startsWith("--"));
+
+console.log("╔══════════════════════════════════════════════════╗");
+console.log("║     AIien — Phase 2: Roguelike Systems           ║");
+console.log("╚══════════════════════════════════════════════════╝");
 console.log();
 
-// Create ship
-const map = createShipMap();
-console.log("[Ship] Map created (40x20, 6 rooms)");
+// ── Generate or load ship ────────────────────────────────────────
+let map;
+let alienSpawn: [number, number];
+let playerSpawns: [number, number][];
+
+if (useProceduralShip) {
+  console.log("[Ship] Generating procedural ship...");
+  const ship = generateShip(seed);
+  map = ship.map;
+  alienSpawn = ship.alienSpawn;
+  playerSpawns = ship.playerSpawns;
+  console.log(`[Ship] Generated! Seed: ${ship.seed} | ${map.rooms.length} rooms | ${map.width}x${map.height} tiles`);
+  console.log(`[Ship] Rooms: ${map.rooms.map((r) => r.name).join(", ")}`);
+} else {
+  console.log("[Ship] Using static map");
+  map = createShipMap();
+  alienSpawn = [5, 13];
+  playerSpawns = [[3, 3], [5, 3], [3, 5], [5, 5]];
+}
+
 printMap(map);
 console.log();
 
-// Create game state
-const state = createInitialGameState(map, LURKER_CARD);
+// ── Generate alien ───────────────────────────────────────────────
+console.log("[Alien] Generating unique alien...");
+const { card: alienCard, generated } = await generateAlienCard(GEMINI_API_KEY);
+console.log(`[Alien] ${generated ? "AI-Generated" : "Fallback"}: ${alienCard.name} (${alienCard.bodyType})`);
+console.log(`[Alien] HP: ${alienCard.hp} | Speed: ${alienCard.speed} | ${alienCard.movementStyle}`);
+console.log(`[Alien] Personality: ${alienCard.personality}`);
+console.log(`[Alien] Voice: "${alienCard.voiceStyle}"`);
+console.log(`[Alien] Abilities: ${alienCard.abilities.map((a) => `${a.name} (${a.damage}dmg, ${a.cooldown}s cd)`).join(", ")}`);
+console.log();
 
-// Add simulated players
-addPlayer(state, "yoonki");
-addPlayer(state, "alex");
-addPlayer(state, "sam");
-console.log(`[Players] ${state.players.length} players spawned in Engine Bay`);
+// ── Knowledge base ───────────────────────────────────────────────
+const kb = new KnowledgeBase();
+const names = playerNames.length > 0 ? playerNames : ["yoonki", "alex", "sam"];
 
-// Show initial positions
+// Load existing profiles
+const profiles = await kb.getProfilesForSession(names);
+if (profiles.length > 0) {
+  console.log(`[KB] Found ${profiles.length} returning players:`);
+  for (const p of profiles) {
+    console.log(`  ${p.nickname}: ${p.gamesPlayed} games | fears: ${p.fearBehaviors.join(", ") || "unknown"}`);
+  }
+} else {
+  console.log("[KB] All new players — no prior data");
+}
+console.log();
+
+// ── Create game state ────────────────────────────────────────────
+const state = createInitialGameState(map, alienCard);
+
+// Override alien spawn for procedural maps
+state.alien.x = alienSpawn[0];
+state.alien.y = alienSpawn[1];
+
+// Add players at spawn points
+for (let i = 0; i < names.length; i++) {
+  const player = addPlayer(state, names[i]);
+  if (playerSpawns[i]) {
+    player.x = playerSpawns[i][0];
+    player.y = playerSpawns[i][1];
+  }
+}
+
+console.log(`[Players] ${state.players.length} players spawned`);
 printMap(map, [
   ...state.players.map((p) => ({ x: p.x, y: p.y, char: "@" })),
   { x: state.alien.x, y: state.alien.y, char: "X" },
 ]);
 console.log("\n  @ = player, X = alien\n");
 
-// Create systems
+// ── Create systems ───────────────────────────────────────────────
 const director = new DirectorClient(GEMINI_API_KEY);
 const sessionId = `${Date.now()}`;
 const logger = new DecisionLogger(sessionId);
 const spectator = new SpectatorServer();
 
-// Start spectator server
-const SPECTATOR_PORT = parseInt(process.env.SPECTATOR_PORT ?? "3001");
+const SPECTATOR_PORT = parseInt(process.env.SPECTATOR_PORT ?? "4000");
 spectator.start(SPECTATOR_PORT);
 console.log(`[Spectator] Open http://localhost:${SPECTATOR_PORT} to watch the AI hunt\n`);
 
-// Create and start game loop
+// ── Start game ───────────────────────────────────────────────────
 const game = new GameLoop(state, director, logger, spectator);
 game.start();
 
 console.log("[Game] Running... (Ctrl+C to stop)\n");
 
-// Graceful shutdown
-process.on("SIGINT", () => {
+// ── Graceful shutdown with knowledge base update ─────────────────
+process.on("SIGINT", async () => {
   console.log("\n\n[Game] Stopping...");
   game.stop();
   spectator.stop();
+
+  // Save session results to knowledge base
+  console.log("[KB] Saving player profiles...");
+  for (const player of state.players) {
+    const fearBehaviors: string[] = [];
+    const strategyPatterns: string[] = [];
+
+    // Analyze player behavior from the session
+    if (player.state === "dead") {
+      fearBehaviors.push("died to alien");
+    }
+    if (player.weapon === "shotgun") {
+      strategyPatterns.push("prefers close-range weapons");
+    }
+    if (player.weapon === "pistol") {
+      strategyPatterns.push("uses standard weapons");
+    }
+
+    await kb.recordSession(player.nickname, {
+      weaponsUsed: [player.weapon],
+      newFearBehaviors: fearBehaviors,
+      newStrategyPatterns: strategyPatterns,
+    });
+  }
+
   console.log(`[Log] Decisions saved to: ${logger.getFilePath()}`);
+  console.log("[KB] Profiles updated for next session");
+
   process.exit(0);
 });

@@ -58,7 +58,9 @@ export class DirectorClient {
     lines.push(`  Room: ${alienRoom?.name ?? "unknown"} at (${state.alien.x},${state.alien.y})`);
     lines.push(`  HP: ${state.alien.hp}/${state.alien.maxHp}`);
     lines.push(`  Current strategy: ${state.alien.strategy}`);
-    lines.push(`  Abilities: ${state.alien.card.abilities.map((a) => a.name).join(", ")}`);
+    lines.push(`  Personality: ${state.alien.card.personality}`);
+    lines.push(`  Voice style: ${state.alien.card.voiceStyle}`);
+    lines.push(`  Abilities: ${state.alien.card.abilities.map((a) => `${a.name} (${a.damage}dmg, range:${a.range})`).join(", ")}`);
     lines.push("");
 
     // Players
