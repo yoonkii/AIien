@@ -119,12 +119,17 @@ export class GameLoop {
     // Store for spectator display
     this.state.lastDirectorDecision = decision;
 
-    // Log for Director's Cut
-    this.logger.log(this.state.tick, decision);
+    // Log for Director's Cut with metrics and prompt telemetry
+    const metrics = this.director.getLastMetrics();
+    const prompt = this.director.getLastPrompt(this.state);
+    this.logger.log(this.state.tick, decision, metrics, prompt);
 
+    const metricsTag = metrics
+      ? ` [${metrics.parseMethod}, ${metrics.latencyMs}ms]`
+      : "";
     console.log(
       `[Director] Strategy: ${decision.strategy}${decision.targetPlayer ? ` → ${decision.targetPlayer}` : ""} | ` +
-        `Env: ${decision.environmentActions.length} actions | ` +
+        `Env: ${decision.environmentActions.length} actions${metricsTag} | ` +
         `"${decision.innerMonologue.slice(0, 60)}${decision.innerMonologue.length > 60 ? "..." : ""}"`
     );
   }

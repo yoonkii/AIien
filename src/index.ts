@@ -16,6 +16,7 @@ import { generateAlienCard } from "./ai/AlienGenerator";
 import { KnowledgeBase } from "./ai/KnowledgeBase";
 import { DirectorClient } from "./ai/DirectorClient";
 import { DecisionLogger } from "./logging/DecisionLogger";
+import { SessionManifest } from "./logging/SessionManifest";
 import { SpectatorServer } from "./spectator/SpectatorServer";
 import { GameLoop } from "./game/GameLoop";
 
@@ -130,6 +131,23 @@ const SPECTATOR_PORT = parseInt(process.env.SPECTATOR_PORT ?? "4000");
 spectator.start(SPECTATOR_PORT);
 console.log(`[Spectator] Open http://localhost:${SPECTATOR_PORT} to watch the AI hunt\n`);
 
+// ── Write session manifest ──────────────────────────────────────
+const manifest = new SessionManifest(sessionId);
+await manifest.write({
+  sessionId,
+  startedAt: new Date().toISOString(),
+  seed,
+  useProceduralShip,
+  alienCard,
+  alienGenerated: generated,
+  players: names,
+  modelVersion: "gemini-2.0-flash",
+  directorIntervalTicks: 30,
+  gameTimeoutTicks: 12000,
+  spectatorPort: SPECTATOR_PORT,
+  version: "0.2.0",
+});
+
 // ── Start game ───────────────────────────────────────────────────
 const game = new GameLoop(state, director, logger, spectator);
 game.start();
@@ -165,6 +183,9 @@ process.on("SIGINT", async () => {
       newStrategyPatterns: strategyPatterns,
     });
   }
+
+  // Write aggregated session metrics
+  await logger.writeSessionMetrics();
 
   console.log(`[Log] Decisions saved to: ${logger.getFilePath()}`);
   console.log("[KB] Profiles updated for next session");
