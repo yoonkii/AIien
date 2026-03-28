@@ -1,399 +1,486 @@
 /**
- * Spectator Server — WebSocket server pushing game state to browser viewers.
- * Phase 1: localhost debug window showing full map + AI reasoning.
+ * Spectator Server — WebSocket server with side-scrolling platformer renderer.
+ *
+ * Broadcasts game state + camera to connected browser clients.
+ * The browser renders a 2D side-view canvas with tile map, entities, and HUD.
+ * Also accepts keyboard input from clients (for future real player control).
  */
 
 import type { GameState } from "../game/GameState";
-import { getRoomAt } from "../game/TileMap";
+import type { Camera } from "../game/Camera";
+import { TILE_SIZE } from "../game/Physics";
+import { getRoomAtWorld } from "../game/TileMap";
 
 interface SpectatorPayload {
   tick: number;
+  camera: { x: number; y: number; width: number; height: number };
+  map: {
+    tiles: number[][];
+    width: number;
+    height: number;
+  };
   alien: {
     x: number;
     y: number;
+    width: number;
+    height: number;
     hp: number;
+    maxHp: number;
     strategy: string;
-    targetPlayer: string | null;
-    room: string;
+    facing: string;
+    attacking: boolean;
   };
   players: Array<{
     nickname: string;
     x: number;
     y: number;
+    width: number;
+    height: number;
     hp: number;
-    weapon: string;
+    maxHp: number;
     state: string;
-    room: string;
+    facing: string;
+    attacking: boolean;
+    invincible: boolean;
   }>;
   environment: {
-    lights: Record<string, boolean>;
     power: boolean;
+    darkRooms: string[];
   };
   director: {
     strategy: string;
-    targetPlayer: string | null;
-    reasoning: string;
     innerMonologue: string;
-    environmentActions: Array<{ actionType: string; room: string; value: string }>;
+    reasoning: string;
   } | null;
-  gameOver: boolean;
-  gameResult: string | null;
-}
-
-function buildPayload(state: GameState): SpectatorPayload {
-  const alienRoom = getRoomAt(state.map, state.alien.x, state.alien.y);
-  const lights: Record<string, boolean> = {};
-  state.environment.lights.forEach((v, k) => (lights[k] = v));
-
-  return {
-    tick: state.tick,
-    alien: {
-      x: state.alien.x,
-      y: state.alien.y,
-      hp: state.alien.hp,
-      strategy: state.alien.strategy,
-      targetPlayer: state.alien.targetPlayer,
-      room: alienRoom?.name ?? "unknown",
-    },
-    players: state.players.map((p) => {
-      const pRoom = getRoomAt(state.map, p.x, p.y);
-      return {
-        nickname: p.nickname,
-        x: p.x,
-        y: p.y,
-        hp: p.hp,
-        weapon: p.weapon,
-        state: p.state,
-        room: pRoom?.name ?? "unknown",
-      };
-    }),
-    environment: { lights, power: state.environment.power },
-    director: state.lastDirectorDecision
-      ? {
-          strategy: state.lastDirectorDecision.strategy,
-          targetPlayer: state.lastDirectorDecision.targetPlayer,
-          reasoning: state.lastDirectorDecision.reasoning,
-          innerMonologue: state.lastDirectorDecision.innerMonologue,
-          environmentActions: state.lastDirectorDecision.environmentActions,
-        }
-      : null,
-    gameOver: state.gameOver,
-    gameResult: state.gameResult,
-  };
 }
 
 export class SpectatorServer {
-  private clients = new Set<any>(); // Bun WebSocket instances
   private server: ReturnType<typeof Bun.serve> | null = null;
+  private sockets = new Set<any>();
 
   start(port: number) {
     this.server = Bun.serve({
       port,
-      fetch(req, server) {
-        const url = new URL(req.url);
-
-        // Serve the spectator HTML page
-        if (url.pathname === "/" || url.pathname === "/spectator") {
-          return new Response(SPECTATOR_HTML, {
-            headers: { "Content-Type": "text/html" },
-          });
-        }
-
-        // WebSocket upgrade
-        if (url.pathname === "/ws") {
-          const success = server.upgrade(req);
-          if (success) return undefined;
-          return new Response("WebSocket upgrade failed", { status: 400 });
-        }
-
-        return new Response("Not found", { status: 404 });
+      fetch: (req, server) => {
+        if (server.upgrade(req)) return;
+        return new Response(SPECTATOR_HTML, {
+          headers: { "Content-Type": "text/html" },
+        });
       },
       websocket: {
         open: (ws) => {
-          this.clients.add(ws);
-          console.log(`[Spectator] Client connected (${this.clients.size} total)`);
+          this.sockets.add(ws);
         },
         close: (ws) => {
-          this.clients.delete(ws);
-          console.log(`[Spectator] Client disconnected (${this.clients.size} total)`);
+          this.sockets.delete(ws);
         },
-        message: () => {}, // spectators don't send messages
+        message: (_ws, _msg) => {
+          // Future: handle keyboard input from clients
+        },
       },
     });
-
-    console.log(`[Spectator] Server running at http://localhost:${port}`);
-  }
-
-  /** Broadcast game state to all connected spectators */
-  broadcast(state: GameState) {
-    if (this.clients.size === 0) return;
-    const payload = JSON.stringify(buildPayload(state));
-    for (const client of this.clients) {
-      try {
-        client.send(payload);
-      } catch {
-        this.clients.delete(client);
-      }
-    }
   }
 
   stop() {
-    this.server?.stop();
-  }
-}
-
-// ── Spectator HTML (inline, self-contained) ──────────────────────
-const SPECTATOR_HTML = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8">
-<title>AIien — Spectator</title>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: #0A0E17;
-    color: #CBD5E0;
-    font-family: 'IBM Plex Mono', monospace;
-    font-size: 12px;
-    overflow: hidden;
-    height: 100vh;
-  }
-  body::after {
-    content: '';
-    position: fixed;
-    inset: 0;
-    background: repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,0,0,0.03) 2px, rgba(0,0,0,0.03) 4px);
-    pointer-events: none;
-    z-index: 1000;
-  }
-  .container { display: grid; grid-template-columns: 1fr 340px; height: 100vh; }
-  .map-panel { padding: 16px; overflow: hidden; }
-  .sidebar {
-    background: #0F1420;
-    border-left: 1px solid #2D3748;
-    overflow-y: auto;
-    padding: 12px;
-  }
-  .section-title {
-    font-size: 9px;
-    color: #E8930C;
-    letter-spacing: 2px;
-    text-transform: uppercase;
-    margin: 12px 0 8px;
-    padding-bottom: 4px;
-    border-bottom: 1px solid #2D3748;
-  }
-  .section-title:first-child { margin-top: 0; }
-  canvas { image-rendering: pixelated; }
-  .stat { display: flex; justify-content: space-between; padding: 3px 0; }
-  .stat-label { color: #718096; }
-  .stat-value { color: #CBD5E0; }
-  .stat-value.amber { color: #E8930C; }
-  .stat-value.teal { color: #38B2AC; }
-  .stat-value.red { color: #C53030; }
-  .reasoning {
-    background: rgba(56,178,172,0.05);
-    border-left: 2px solid #2C8C87;
-    padding: 8px;
-    margin: 4px 0;
-    line-height: 1.5;
-    color: #A0AEC0;
-    font-size: 11px;
-  }
-  .monologue {
-    background: rgba(197,48,48,0.05);
-    border-left: 2px solid #C53030;
-    padding: 8px;
-    margin: 4px 0;
-    font-style: italic;
-    line-height: 1.5;
-    color: #A0AEC0;
-    font-size: 11px;
-  }
-  .player-card {
-    background: #1A2030;
-    border: 1px solid #2D3748;
-    border-radius: 2px;
-    padding: 8px;
-    margin: 4px 0;
-  }
-  .player-name { color: #38B2AC; font-weight: 600; }
-  .env-action {
-    background: rgba(232,147,12,0.08);
-    border-left: 2px solid #E8930C;
-    padding: 4px 8px;
-    margin: 2px 0;
-    font-size: 10px;
-    color: #E8930C;
-  }
-  #status { color: #718096; font-size: 10px; padding: 4px; }
-  .history { max-height: 200px; overflow-y: auto; }
-</style>
-</head>
-<body>
-<div class="container">
-  <div class="map-panel">
-    <canvas id="map" width="640" height="320"></canvas>
-    <div id="status">Connecting...</div>
-  </div>
-  <div class="sidebar" id="sidebar">
-    <div class="section-title">Director AI</div>
-    <div id="director-info">Waiting for first decision...</div>
-    <div class="section-title">Players</div>
-    <div id="player-info"></div>
-    <div class="section-title">Alien</div>
-    <div id="alien-info"></div>
-    <div class="section-title">Environment</div>
-    <div id="env-info"></div>
-    <div class="section-title">Decision History</div>
-    <div id="history" class="history"></div>
-  </div>
-</div>
-<script>
-const canvas = document.getElementById('map');
-const ctx = canvas.getContext('2d');
-const TILE = 16;
-let lastState = null;
-const decisionHistory = [];
-
-const COLORS = {
-  void: '#060810',
-  floor: '#1A2030',
-  floorDark: '#0D1218',
-  wall: '#2D3748',
-  door: '#E8930C',
-  doorLocked: '#C53030',
-  vent: '#4A5568',
-  player: '#38B2AC',
-  alien: '#C53030',
-};
-
-function drawMap(state) {
-  if (!state) return;
-  ctx.fillStyle = COLORS.void;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-  // We don't have full tile data in the payload, so draw rooms as rectangles
-  // This is a simplified spectator view
-  const roomPositions = {
-    engine_bay: { x: 0, y: 0, w: 12, h: 8 },
-    corridor_b: { x: 12, y: 2, w: 10, h: 4 },
-    bridge: { x: 22, y: 0, w: 10, h: 7 },
-    cargo_bay: { x: 0, y: 10, w: 12, h: 7 },
-    corridor_a: { x: 12, y: 11, w: 10, h: 4 },
-    medbay: { x: 22, y: 10, w: 10, h: 7 },
-  };
-
-  for (const [id, r] of Object.entries(roomPositions)) {
-    const lit = state.environment.lights[id] !== false && state.environment.power;
-    ctx.fillStyle = lit ? COLORS.floor : COLORS.floorDark;
-    ctx.fillRect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE);
-    ctx.strokeStyle = COLORS.wall;
-    ctx.lineWidth = 2;
-    ctx.strokeRect(r.x * TILE, r.y * TILE, r.w * TILE, r.h * TILE);
-
-    // Room label
-    ctx.fillStyle = '#4A5568';
-    ctx.font = '9px IBM Plex Mono';
-    ctx.fillText(id.replace('_', ' ').toUpperCase(), r.x * TILE + 4, r.y * TILE + 12);
-  }
-
-  // Draw players
-  for (const p of state.players) {
-    if (p.state === 'dead') continue;
-    ctx.fillStyle = COLORS.player;
-    ctx.beginPath();
-    ctx.arc(p.x * TILE + TILE/2, p.y * TILE + TILE/2, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#38B2AC';
-    ctx.font = '9px IBM Plex Mono';
-    ctx.fillText(p.nickname, p.x * TILE - 4, p.y * TILE - 4);
-  }
-
-  // Draw alien
-  ctx.fillStyle = COLORS.alien;
-  ctx.beginPath();
-  ctx.arc(state.alien.x * TILE + TILE/2, state.alien.y * TILE + TILE/2, 6, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#C53030';
-  ctx.font = 'bold 10px IBM Plex Mono';
-  ctx.fillText('ALIEN', state.alien.x * TILE - 8, state.alien.y * TILE - 6);
-}
-
-function updateSidebar(state) {
-  // Director
-  const di = document.getElementById('director-info');
-  if (state.director) {
-    const d = state.director;
-    di.innerHTML = \`
-      <div class="stat"><span class="stat-label">Strategy</span><span class="stat-value amber">\${d.strategy.toUpperCase()}</span></div>
-      <div class="stat"><span class="stat-label">Target</span><span class="stat-value">\${d.targetPlayer || 'none'}</span></div>
-      \${d.reasoning ? '<div class="reasoning">' + d.reasoning + '</div>' : ''}
-      \${d.innerMonologue ? '<div class="monologue">"' + d.innerMonologue + '"</div>' : ''}
-      \${d.environmentActions.map(a => '<div class="env-action">' + a.actionType + ' ' + a.room + ' → ' + a.value + '</div>').join('')}
-    \`;
-  }
-
-  // Players
-  const pi = document.getElementById('player-info');
-  pi.innerHTML = state.players.map(p => \`
-    <div class="player-card">
-      <div class="player-name">\${p.nickname}</div>
-      <div class="stat"><span class="stat-label">HP</span><span class="stat-value \${p.hp < 30 ? 'red' : 'teal'}">\${p.hp}/100</span></div>
-      <div class="stat"><span class="stat-label">Room</span><span class="stat-value">\${p.room}</span></div>
-      <div class="stat"><span class="stat-label">State</span><span class="stat-value">\${p.state}</span></div>
-    </div>
-  \`).join('');
-
-  // Alien
-  const ai = document.getElementById('alien-info');
-  ai.innerHTML = \`
-    <div class="stat"><span class="stat-label">HP</span><span class="stat-value \${state.alien.hp < 40 ? 'red' : ''}">\${state.alien.hp}/100</span></div>
-    <div class="stat"><span class="stat-label">Room</span><span class="stat-value">\${state.alien.room}</span></div>
-    <div class="stat"><span class="stat-label">Position</span><span class="stat-value">(\${state.alien.x}, \${state.alien.y})</span></div>
-  \`;
-
-  // Environment
-  const ei = document.getElementById('env-info');
-  const lightEntries = Object.entries(state.environment.lights)
-    .map(([room, on]) => '<div class="stat"><span class="stat-label">' + room + '</span><span class="stat-value ' + (on ? 'teal' : 'red') + '">' + (on ? 'LIT' : 'DARK') + '</span></div>')
-    .join('');
-  ei.innerHTML = \`
-    <div class="stat"><span class="stat-label">Power</span><span class="stat-value \${state.environment.power ? 'teal' : 'red'}">\${state.environment.power ? 'ON' : 'OFF'}</span></div>
-    \${lightEntries}
-  \`;
-
-  // Status
-  document.getElementById('status').textContent = \`Tick: \${state.tick} | Players: \${state.players.filter(p => p.state !== 'dead').length} alive\`;
-}
-
-// WebSocket
-const ws = new WebSocket('ws://' + location.host + '/ws');
-ws.onopen = () => { document.getElementById('status').textContent = 'Connected'; };
-ws.onclose = () => { document.getElementById('status').textContent = 'Disconnected'; };
-ws.onmessage = (e) => {
-  const state = JSON.parse(e.data);
-  lastState = state;
-  drawMap(state);
-  updateSidebar(state);
-
-  // Track decision history
-  if (state.director) {
-    const last = decisionHistory[0];
-    if (!last || last.strategy !== state.director.strategy || last.innerMonologue !== state.director.innerMonologue) {
-      decisionHistory.unshift({ tick: state.tick, ...state.director });
-      if (decisionHistory.length > 20) decisionHistory.pop();
-      const hDiv = document.getElementById('history');
-      hDiv.innerHTML = decisionHistory.map(d =>
-        '<div style="margin-bottom:8px;padding:4px;border-bottom:1px solid #1A2030">' +
-        '<div style="color:#718096;font-size:9px">T+' + d.tick + ' — ' + d.strategy.toUpperCase() + '</div>' +
-        (d.innerMonologue ? '<div class="monologue" style="margin:2px 0">"' + d.innerMonologue + '"</div>' : '') +
-        '</div>'
-      ).join('');
+    if (this.server) {
+      this.server.stop();
+      this.server = null;
     }
   }
-};
-</script>
+
+  broadcast(state: GameState, camera: Camera) {
+    if (this.sockets.size === 0) return;
+
+    const darkRooms: string[] = [];
+    for (const [roomId, lit] of state.environment.lights) {
+      if (!lit) darkRooms.push(roomId);
+    }
+
+    const payload: SpectatorPayload = {
+      tick: state.tick,
+      camera: {
+        x: Math.round(camera.x),
+        y: Math.round(camera.y),
+        width: camera.width,
+        height: camera.height,
+      },
+      map: {
+        tiles: state.map.tiles,
+        width: state.map.width,
+        height: state.map.height,
+      },
+      alien: {
+        x: Math.round(state.alien.x),
+        y: Math.round(state.alien.y),
+        width: state.alien.width,
+        height: state.alien.height,
+        hp: Math.round(state.alien.hp),
+        maxHp: state.alien.maxHp,
+        strategy: state.alien.strategy,
+        facing: state.alien.facing,
+        attacking: state.alien.attackTimer > 0,
+      },
+      players: state.players.map((p) => ({
+        nickname: p.nickname,
+        x: Math.round(p.x),
+        y: Math.round(p.y),
+        width: p.width,
+        height: p.height,
+        hp: p.hp,
+        maxHp: p.maxHp,
+        state: p.state,
+        facing: p.facing,
+        attacking: p.attackTimer > 0,
+        invincible: p.invincibleTimer > 0,
+      })),
+      environment: {
+        power: state.environment.power,
+        darkRooms,
+      },
+      director: state.lastDirectorDecision
+        ? {
+            strategy: state.lastDirectorDecision.strategy,
+            innerMonologue: state.lastDirectorDecision.innerMonologue,
+            reasoning: state.lastDirectorDecision.reasoning,
+          }
+        : null,
+    };
+
+    const json = JSON.stringify(payload);
+    for (const ws of this.sockets) {
+      try {
+        ws.send(json);
+      } catch {
+        this.sockets.delete(ws);
+      }
+    }
+  }
+}
+
+// ── Inline HTML for the spectator viewer ────────────────────────
+
+const SPECTATOR_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AIien — Spectator</title>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;700&display=swap');
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0A0E17;
+      color: #CBD5E0;
+      font-family: 'IBM Plex Mono', monospace;
+      display: flex;
+      height: 100vh;
+      overflow: hidden;
+    }
+    #game-container {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      image-rendering: pixelated;
+    }
+    /* CRT scanline overlay */
+    #scanlines {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent,
+        transparent 2px,
+        rgba(0,0,0,0.03) 2px,
+        rgba(0,0,0,0.03) 4px
+      );
+    }
+    #sidebar {
+      width: 280px;
+      background: #0F1420;
+      padding: 12px;
+      overflow-y: auto;
+      border-left: 1px solid #2D3748;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+    .section { margin-bottom: 12px; }
+    .section-title {
+      color: #38B2AC;
+      font-weight: 700;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+    }
+    .alien-info { color: #C53030; }
+    .player-info { color: #38B2AC; }
+    .monologue {
+      color: #C53030;
+      font-style: italic;
+      border-left: 2px solid #C53030;
+      padding-left: 8px;
+      margin: 4px 0;
+    }
+    .reasoning {
+      color: #38B2AC;
+      border-left: 2px solid #38B2AC;
+      padding-left: 8px;
+      margin: 4px 0;
+    }
+    .hp-bar {
+      height: 4px;
+      background: #2D3748;
+      margin: 2px 0;
+      border-radius: 2px;
+    }
+    .hp-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width 0.3s;
+    }
+    #status-bar {
+      position: absolute;
+      bottom: 8px;
+      left: 8px;
+      color: #4A5568;
+      font-size: 10px;
+    }
+  </style>
+</head>
+<body>
+  <div id="game-container">
+    <canvas id="canvas"></canvas>
+    <div id="scanlines"></div>
+    <div id="status-bar">Connecting...</div>
+  </div>
+  <div id="sidebar">
+    <div class="section">
+      <div class="section-title">AIien — Director's Cut</div>
+      <div style="color: #4A5568; font-size: 10px;">Side-scrolling Platformer View</div>
+    </div>
+    <div id="alien-panel" class="section"></div>
+    <div id="player-panel" class="section"></div>
+    <div id="director-panel" class="section"></div>
+    <div id="env-panel" class="section"></div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const TILE = ${TILE_SIZE};
+
+    // Colors from DESIGN.md
+    const COLORS = {
+      void: '#0A0E17',
+      solid: '#1A2030',
+      wall: '#2D3748',
+      platform: '#4A5568',
+      vent: '#553C9A',
+      door: '#E8930C',
+      hazard: '#C53030',
+      player: '#38B2AC',
+      playerHurt: '#63B3ED',
+      alien: '#C53030',
+      alienGlow: '#E8930C',
+      attackBox: 'rgba(232, 147, 12, 0.4)',
+      bg: '#0A0E17',
+    };
+
+    let lastState = null;
+
+    function resize() {
+      const container = canvas.parentElement;
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    function render(state) {
+      const { camera, map, alien, players, environment } = state;
+      const scaleX = canvas.width / camera.width;
+      const scaleY = canvas.height / camera.height;
+      const scale = Math.min(scaleX, scaleY);
+
+      ctx.save();
+      ctx.fillStyle = COLORS.bg;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.scale(scale, scale);
+      ctx.translate(-camera.x, -camera.y);
+
+      // ── Draw tiles ────────────────────────────────────
+      const startTX = Math.floor(camera.x / TILE);
+      const endTX = Math.ceil((camera.x + camera.width) / TILE);
+      const startTY = Math.floor(camera.y / TILE);
+      const endTY = Math.ceil((camera.y + camera.height) / TILE);
+
+      for (let ty = startTY; ty <= endTY; ty++) {
+        for (let tx = startTX; tx <= endTX; tx++) {
+          if (ty < 0 || ty >= map.height || tx < 0 || tx >= map.width) continue;
+          const tile = map.tiles[ty]?.[tx] ?? 0;
+          if (tile === 0) continue; // skip empty
+
+          const colors = [null, COLORS.solid, COLORS.wall, COLORS.platform, COLORS.vent, COLORS.door, COLORS.hazard];
+          const color = colors[tile] || COLORS.solid;
+          ctx.fillStyle = color;
+          ctx.fillRect(tx * TILE, ty * TILE, TILE, TILE);
+
+          // Platform indicator (top line)
+          if (tile === 3) {
+            ctx.fillStyle = '#718096';
+            ctx.fillRect(tx * TILE, ty * TILE, TILE, 2);
+          }
+        }
+      }
+
+      // ── Draw players ──────────────────────────────────
+      for (const p of players) {
+        if (p.state === 'dead') continue;
+
+        // Flash when invincible
+        if (p.invincible && Math.floor(state.tick / 4) % 2 === 0) continue;
+
+        ctx.fillStyle = COLORS.player;
+        ctx.fillRect(p.x, p.y, p.width, p.height);
+
+        // Eyes (facing direction indicator)
+        const eyeX = p.facing === 'right' ? p.x + p.width - 4 : p.x + 1;
+        ctx.fillStyle = '#E2E8F0';
+        ctx.fillRect(eyeX, p.y + 4, 3, 3);
+
+        // Attack hitbox visualization
+        if (p.attacking) {
+          ctx.fillStyle = COLORS.attackBox;
+          const atkX = p.facing === 'right' ? p.x + p.width : p.x - 24;
+          ctx.fillRect(atkX, p.y + 4, 24, 16);
+        }
+
+        // Nickname
+        ctx.fillStyle = COLORS.player;
+        ctx.font = '7px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(p.nickname, p.x + p.width / 2, p.y - 3);
+
+        // HP bar
+        const hpW = p.width + 4;
+        const hpX = p.x - 2;
+        const hpY = p.y - 8;
+        ctx.fillStyle = '#2D3748';
+        ctx.fillRect(hpX, hpY, hpW, 3);
+        ctx.fillStyle = p.hp > 50 ? '#38B2AC' : p.hp > 25 ? '#E8930C' : '#C53030';
+        ctx.fillRect(hpX, hpY, hpW * (p.hp / p.maxHp), 3);
+      }
+
+      // ── Draw alien ────────────────────────────────────
+      if (alien.hp > 0) {
+        // Glow effect
+        ctx.fillStyle = 'rgba(197, 48, 48, 0.15)';
+        ctx.fillRect(alien.x - 4, alien.y - 4, alien.width + 8, alien.height + 8);
+
+        ctx.fillStyle = COLORS.alien;
+        ctx.fillRect(alien.x, alien.y, alien.width, alien.height);
+
+        // Eyes
+        const eyeX = alien.facing === 'right' ? alien.x + alien.width - 6 : alien.x + 2;
+        ctx.fillStyle = '#E8930C';
+        ctx.fillRect(eyeX, alien.y + 5, 4, 3);
+
+        // Attack hitbox
+        if (alien.attacking) {
+          ctx.fillStyle = 'rgba(197, 48, 48, 0.4)';
+          const atkX = alien.facing === 'right' ? alien.x + alien.width : alien.x - 32;
+          ctx.fillRect(atkX, alien.y + 2, 32, 24);
+        }
+
+        // HP bar
+        const hpW = alien.width + 8;
+        const hpX = alien.x - 4;
+        const hpY = alien.y - 10;
+        ctx.fillStyle = '#2D3748';
+        ctx.fillRect(hpX, hpY, hpW, 4);
+        ctx.fillStyle = '#C53030';
+        ctx.fillRect(hpX, hpY, hpW * (alien.hp / alien.maxHp), 4);
+
+        // Strategy label
+        ctx.fillStyle = '#C53030';
+        ctx.font = '6px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText(alien.strategy.toUpperCase(), alien.x + alien.width / 2, alien.y - 14);
+      }
+
+      ctx.restore();
+
+      // ── Darkness overlay for dark rooms ────────────────
+      if (!environment.power) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    }
+
+    function updateSidebar(state) {
+      const { alien, players, director, environment } = state;
+
+      // Alien panel
+      document.getElementById('alien-panel').innerHTML =
+        '<div class="section-title alien-info">Alien</div>' +
+        '<div>Strategy: <strong>' + alien.strategy + '</strong></div>' +
+        '<div>HP: ' + alien.hp + '/' + alien.maxHp + '</div>' +
+        '<div class="hp-bar"><div class="hp-fill" style="width:' + (alien.hp/alien.maxHp*100) + '%;background:#C53030"></div></div>' +
+        '<div>Facing: ' + alien.facing + '</div>';
+
+      // Players panel
+      let playerHtml = '<div class="section-title player-info">Crew</div>';
+      for (const p of players) {
+        const hpPct = (p.hp / p.maxHp * 100);
+        const hpColor = p.hp > 50 ? '#38B2AC' : p.hp > 25 ? '#E8930C' : '#C53030';
+        playerHtml += '<div>' + p.nickname + ': ' + (p.state === 'dead' ? '<span style="color:#C53030">DEAD</span>' : p.state) + '</div>';
+        playerHtml += '<div class="hp-bar"><div class="hp-fill" style="width:' + hpPct + '%;background:' + hpColor + '"></div></div>';
+      }
+      document.getElementById('player-panel').innerHTML = playerHtml;
+
+      // Director panel
+      if (director) {
+        document.getElementById('director-panel').innerHTML =
+          '<div class="section-title">Director AI</div>' +
+          '<div>Strategy: ' + director.strategy + '</div>' +
+          '<div class="monologue">"' + director.innerMonologue.slice(0, 120) + '"</div>' +
+          '<div class="reasoning">' + director.reasoning.slice(0, 120) + '</div>';
+      }
+
+      // Environment panel
+      const darkCount = environment.darkRooms.length;
+      document.getElementById('env-panel').innerHTML =
+        '<div class="section-title">Environment</div>' +
+        '<div>Power: ' + (environment.power ? 'ON' : '<span style="color:#C53030">OFF</span>') + '</div>' +
+        '<div>Dark rooms: ' + darkCount + '</div>';
+    }
+
+    // ── WebSocket connection ────────────────────────────
+    function connect() {
+      const ws = new WebSocket('ws://' + location.host);
+      ws.onopen = () => {
+        document.getElementById('status-bar').textContent = 'Connected — spectating';
+      };
+      ws.onmessage = (e) => {
+        const state = JSON.parse(e.data);
+        lastState = state;
+        render(state);
+        updateSidebar(state);
+        document.getElementById('status-bar').textContent = 'Tick: ' + state.tick;
+      };
+      ws.onclose = () => {
+        document.getElementById('status-bar').textContent = 'Disconnected — reconnecting...';
+        setTimeout(connect, 2000);
+      };
+    }
+    connect();
+  </script>
 </body>
 </html>`;

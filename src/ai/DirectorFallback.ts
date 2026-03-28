@@ -7,7 +7,7 @@
  */
 
 import type { GameState, DirectorDecision, Strategy } from "../game/GameState";
-import { getRoomAt } from "../game/TileMap";
+import { getRoomAtWorld } from "../game/TileMap";
 
 interface StrategyScore {
   strategy: Strategy;

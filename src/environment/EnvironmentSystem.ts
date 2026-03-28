@@ -1,28 +1,19 @@
 /**
  * Environment System — the ship as a weapon.
  * Applies Director's environmental actions to game state.
+ *
+ * Adapted for platformer: doors toggle between solid/passable tiles.
  */
 
 import type { GameState, DirectorDecision } from "../game/GameState";
-import type { Room } from "../game/TileMap";
-
-/** Find room by ID or by name (fuzzy match for Gemini's output) */
-function findRoom(state: GameState, roomRef: string): Room | null {
-  // Try exact ID match first
-  const byId = state.map.rooms.find((r) => r.id === roomRef);
-  if (byId) return byId;
-
-  // Try case-insensitive name match
-  const lower = roomRef.toLowerCase().replace(/[^a-z]/g, "");
-  return state.map.rooms.find((r) => r.name.toLowerCase().replace(/[^a-z]/g, "") === lower) ?? null;
-}
+import { findRoom } from "../game/TileMap";
 
 /** Apply environment actions from a Director decision */
 export function applyEnvironmentActions(state: GameState, decision: DirectorDecision) {
   for (const action of decision.environmentActions) {
     switch (action.actionType) {
       case "lights": {
-        const room = findRoom(state, action.room);
+        const room = findRoom(state.map, action.room);
         if (!room) {
           console.warn(`[Env] Unknown room: ${action.room}`);
           break;
@@ -31,18 +22,20 @@ export function applyEnvironmentActions(state: GameState, decision: DirectorDeci
         break;
       }
       case "door": {
-        const room = findRoom(state, action.room);
+        const room = findRoom(state.map, action.room);
         if (!room) {
           console.warn(`[Env] Unknown room for door: ${action.room}`);
           break;
         }
-        // Apply to all door exits of this room
-        for (const exit of room.exits) {
-          if (exit.type === "door") {
-            const key = `${exit.pos[0]},${exit.pos[1]}`;
-            const val = action.value as "open" | "closed" | "locked";
-            if (["open", "closed", "locked"].includes(val)) {
-              state.environment.doors.set(key, val);
+        // Find all door tiles in this room and update their state
+        for (let y = room.y; y < room.y + room.height; y++) {
+          for (let x = room.x; x < room.x + room.width; x++) {
+            if (state.map.tiles[y]?.[x] === 5) {
+              const key = `${x},${y}`;
+              const val = action.value as "open" | "closed" | "locked";
+              if (["open", "closed", "locked"].includes(val)) {
+                state.environment.doors.set(key, val);
+              }
             }
           }
         }
@@ -50,7 +43,6 @@ export function applyEnvironmentActions(state: GameState, decision: DirectorDeci
       }
       case "power": {
         state.environment.power = action.value === "on";
-        // When power is off, all lights go off
         if (!state.environment.power) {
           for (const room of state.map.rooms) {
             state.environment.lights.set(room.id, false);

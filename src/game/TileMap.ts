@@ -1,148 +1,236 @@
 /**
- * Tile-based map representation with A* pathfinding.
+ * TileMap — platformer tile system with collision queries.
  *
- * COORDINATE SYSTEM:
- *   (0,0) is top-left. X increases right, Y increases down.
- *   Each room is a rectangle of tiles placed at an offset in the global grid.
- *
- * TILE TYPES:
- *   0 = void (impassable, outside ship)
- *   1 = floor (walkable)
- *   2 = wall (impassable)
- *   3 = door (walkable when open, impassable when locked)
- *   4 = vent (alien-only passage)
+ * TILE TYPES (side-scrolling perspective):
+ *   0 = EMPTY — air, background, no collision
+ *   1 = SOLID — floor, wall, ceiling
+ *   2 = WALL  — hull/structural solid (visually different)
+ *   3 = PLATFORM — one-way platform (land on top, pass through from below/sides)
+ *   4 = VENT  — alien-only passage (solid for players)
+ *   5 = DOOR  — togglable solid/passable (controlled by Director)
+ *   6 = HAZARD — pass through but deals damage on contact
  */
 
-export type TileType = 0 | 1 | 2 | 3 | 4;
+import { TILE_SIZE, TileType } from "./Physics";
+import type { LevelMap, RoomInfo } from "./GameState";
 
-export interface Room {
-  id: string;
-  name: string;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  exits: RoomExit[];
+// ── Coordinate Conversion ───────────────────────────────────────
+
+export function worldToTile(px: number): number {
+  return Math.floor(px / TILE_SIZE);
 }
 
-export interface RoomExit {
-  direction: string;
-  toRoomId: string;
-  type: "corridor" | "vent" | "door";
-  pos: [number, number];
+export function tileToWorld(t: number): number {
+  return t * TILE_SIZE;
 }
 
-export interface TileMap {
-  width: number;
-  height: number;
-  tiles: TileType[][];
-  rooms: Room[];
+// ── Tile Queries ────────────────────────────────────────────────
+
+/** Get the tile value at a world pixel coordinate */
+export function getTileAtWorld(
+  map: LevelMap,
+  px: number,
+  py: number
+): number {
+  const tx = worldToTile(px);
+  const ty = worldToTile(py);
+  return getTile(map, tx, ty);
 }
 
-export function getRoomAt(map: TileMap, x: number, y: number): Room | null {
+/** Get the tile value at tile coordinates */
+export function getTile(map: LevelMap, tx: number, ty: number): number {
+  if (tx < 0 || tx >= map.width || ty < 0 || ty >= map.height) {
+    return TileType.SOLID; // out of bounds = solid
+  }
+  return map.tiles[ty]?.[tx] ?? TileType.SOLID;
+}
+
+/** Set a tile value at tile coordinates */
+export function setTile(
+  map: LevelMap,
+  tx: number,
+  ty: number,
+  value: number
+): void {
+  if (tx < 0 || tx >= map.width || ty < 0 || ty >= map.height) return;
+  if (map.tiles[ty]) {
+    map.tiles[ty]![tx] = value;
+  }
+}
+
+/** Get all tiles overlapping a pixel-space rectangle */
+export function getTilesInRect(
+  map: LevelMap,
+  x: number,
+  y: number,
+  width: number,
+  height: number
+): { tx: number; ty: number; tile: number }[] {
+  const result: { tx: number; ty: number; tile: number }[] = [];
+  const left = worldToTile(x);
+  const right = worldToTile(x + width - 1);
+  const top = worldToTile(y);
+  const bottom = worldToTile(y + height - 1);
+
+  for (let ty = top; ty <= bottom; ty++) {
+    for (let tx = left; tx <= right; tx++) {
+      result.push({ tx, ty, tile: getTile(map, tx, ty) });
+    }
+  }
+  return result;
+}
+
+// ── Room Queries ────────────────────────────────────────────────
+
+/** Find which room contains a world pixel position */
+export function getRoomAtWorld(
+  map: LevelMap,
+  px: number,
+  py: number
+): RoomInfo | null {
+  const tx = worldToTile(px);
+  const ty = worldToTile(py);
   for (const room of map.rooms) {
-    if (x >= room.x && x < room.x + room.width && y >= room.y && y < room.y + room.height) {
+    if (
+      tx >= room.x &&
+      tx < room.x + room.width &&
+      ty >= room.y &&
+      ty < room.y + room.height
+    ) {
       return room;
     }
   }
   return null;
 }
 
+/** Find a room by its ID */
+export function getRoomById(map: LevelMap, id: string): RoomInfo | null {
+  return map.rooms.find((r) => r.id === id) ?? null;
+}
+
+/** Find room by name (fuzzy match for Gemini output) */
+export function findRoom(map: LevelMap, roomRef: string): RoomInfo | null {
+  // Exact ID match
+  const byId = map.rooms.find((r) => r.id === roomRef);
+  if (byId) return byId;
+
+  // Case-insensitive name match
+  const lower = roomRef.toLowerCase().replace(/[^a-z]/g, "");
+  return (
+    map.rooms.find(
+      (r) => r.name.toLowerCase().replace(/[^a-z]/g, "") === lower
+    ) ?? null
+  );
+}
+
+// ── A* Pathfinding (tile-level for AI navigation) ───────────────
+
+interface PathNode {
+  x: number;
+  y: number;
+  g: number;
+  h: number;
+  f: number;
+  parent: PathNode | null;
+}
+
 /**
- * A* pathfinding on the tile grid.
- * Returns array of [x,y] from start to end (inclusive), or null if no path.
+ * A* pathfinding on tile grid — used by alien AI for high-level navigation.
+ * Returns path as array of tile coordinates, or null if no path found.
  */
 export function findPath(
-  map: TileMap,
-  startX: number,
-  startY: number,
-  endX: number,
-  endY: number,
-  canUseVents: boolean,
-  doorStates: Map<string, "open" | "closed" | "locked">
+  map: LevelMap,
+  startTX: number,
+  startTY: number,
+  endTX: number,
+  endTY: number,
+  isAlien: boolean,
+  doorStates?: Map<string, string>
 ): [number, number][] | null {
+  // Clamp to map bounds
+  startTX = Math.max(0, Math.min(map.width - 1, startTX));
+  startTY = Math.max(0, Math.min(map.height - 1, startTY));
+  endTX = Math.max(0, Math.min(map.width - 1, endTX));
+  endTY = Math.max(0, Math.min(map.height - 1, endTY));
+
   const key = (x: number, y: number) => `${x},${y}`;
-  const parseKey = (k: string): [number, number] => {
-    const [x, y] = k.split(",").map(Number);
-    return [x, y];
+  const open: PathNode[] = [];
+  const closed = new Set<string>();
+
+  const start: PathNode = {
+    x: startTX,
+    y: startTY,
+    g: 0,
+    h: Math.abs(endTX - startTX) + Math.abs(endTY - startTY),
+    f: 0,
+    parent: null,
+  };
+  start.f = start.g + start.h;
+  open.push(start);
+
+  const isWalkable = (tx: number, ty: number): boolean => {
+    if (tx < 0 || tx >= map.width || ty < 0 || ty >= map.height) return false;
+    const tile = getTile(map, tx, ty);
+    if (tile === TileType.EMPTY || tile === TileType.PLATFORM || tile === TileType.HAZARD) return true;
+    if (tile === TileType.VENT && isAlien) return true;
+    if (tile === TileType.DOOR) {
+      const state = doorStates?.get(`${tx},${ty}`);
+      return state === "open";
+    }
+    return false;
   };
 
-  function isWalkable(x: number, y: number): boolean {
-    if (x < 0 || x >= map.width || y < 0 || y >= map.height) return false;
-    const tile = map.tiles[y][x];
-    if (tile === 0 || tile === 2) return false;
-    if (tile === 4) return canUseVents;
-    if (tile === 3) return doorStates.get(key(x, y)) !== "locked";
-    return true;
-  }
+  let iterations = 0;
+  const maxIterations = 2000;
 
-  const startKey = key(startX, startY);
-  const endKey = key(endX, endY);
-  const h = (x: number, y: number) => Math.abs(x - endX) + Math.abs(y - endY);
+  while (open.length > 0 && iterations < maxIterations) {
+    iterations++;
 
-  const gScore = new Map<string, number>();
-  const fScore = new Map<string, number>();
-  const cameFrom = new Map<string, string>();
-  const openSet = new Set<string>();
-  const closedSet = new Set<string>();
-
-  gScore.set(startKey, 0);
-  fScore.set(startKey, h(startX, startY));
-  openSet.add(startKey);
-
-  const dirs: [number, number][] = [
-    [0, -1], [0, 1], [-1, 0], [1, 0],
-    [-1, -1], [-1, 1], [1, -1], [1, 1],
-  ];
-
-  while (openSet.size > 0) {
-    // Find lowest fScore in openSet
-    let currentKey = "";
-    let currentF = Infinity;
-    for (const k of openSet) {
-      const f = fScore.get(k) ?? Infinity;
-      if (f < currentF) {
-        currentF = f;
-        currentKey = k;
-      }
+    let bestIdx = 0;
+    for (let i = 1; i < open.length; i++) {
+      if (open[i]!.f < open[bestIdx]!.f) bestIdx = i;
     }
+    const current = open.splice(bestIdx, 1)[0]!;
 
-    if (currentKey === endKey) {
-      // Reconstruct path
+    if (current.x === endTX && current.y === endTY) {
       const path: [number, number][] = [];
-      let k: string | undefined = endKey;
-      while (k) {
-        path.unshift(parseKey(k));
-        k = cameFrom.get(k);
+      let node: PathNode | null = current;
+      while (node) {
+        path.unshift([node.x, node.y]);
+        node = node.parent;
       }
       return path;
     }
 
-    openSet.delete(currentKey);
-    closedSet.add(currentKey);
-    const [cx, cy] = parseKey(currentKey);
+    closed.add(key(current.x, current.y));
+
+    const dirs: [number, number][] = [
+      [0, -1],
+      [0, 1],
+      [-1, 0],
+      [1, 0],
+    ];
 
     for (const [dx, dy] of dirs) {
-      const nx = cx + dx;
-      const ny = cy + dy;
-      const nk = key(nx, ny);
+      const nx = current.x + dx;
+      const ny = current.y + dy;
 
-      if (closedSet.has(nk) || !isWalkable(nx, ny)) continue;
+      if (closed.has(key(nx, ny))) continue;
+      if (!isWalkable(nx, ny)) continue;
 
-      // Diagonal: check that both adjacent cardinal tiles are walkable (no corner cutting)
-      if (dx !== 0 && dy !== 0) {
-        if (!isWalkable(cx + dx, cy) || !isWalkable(cx, cy + dy)) continue;
+      const g = current.g + 1;
+      const h = Math.abs(endTX - nx) + Math.abs(endTY - ny);
+
+      const existing = open.find((n) => n.x === nx && n.y === ny);
+      if (existing) {
+        if (g < existing.g) {
+          existing.g = g;
+          existing.f = g + h;
+          existing.parent = current;
+        }
+      } else {
+        open.push({ x: nx, y: ny, g, h, f: g + h, parent: current });
       }
-
-      const moveCost = dx !== 0 && dy !== 0 ? 1.414 : 1;
-      const tentativeG = (gScore.get(currentKey) ?? Infinity) + moveCost;
-
-      if (tentativeG >= (gScore.get(nk) ?? Infinity)) continue;
-
-      cameFrom.set(nk, currentKey);
-      gScore.set(nk, tentativeG);
-      fScore.set(nk, tentativeG + h(nx, ny));
-      openSet.add(nk);
     }
   }
 

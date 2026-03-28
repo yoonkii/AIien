@@ -15,7 +15,7 @@
 
 import { GoogleGenerativeAI, type FunctionCall } from "@google/generative-ai";
 import type { GameState, DirectorDecision, Strategy } from "../game/GameState";
-import { getRoomAt } from "../game/TileMap";
+import { getRoomAtWorld } from "../game/TileMap";
 import { directorTools } from "../spike/director-tools";
 import { formatActionCatalogForPrompt } from "./ActionCatalog";
 import { computeFallbackDecision } from "./DirectorFallback";
@@ -129,7 +129,7 @@ function buildTacticalContext(state: GameState): string {
   const playerDistances: { nickname: string; dist: number; room: string; isolated: boolean }[] = [];
   for (const p of alivePlayers) {
     const dist = Math.abs(p.x - alien.x) + Math.abs(p.y - alien.y);
-    const room = getRoomAt(state.map, p.x, p.y);
+    const room = getRoomAtWorld(state.map, p.x, p.y);
 
     // Check isolation — is any other alive player within 8 tiles?
     let isolated = true;
@@ -360,7 +360,7 @@ export class DirectorClient {
     const lines: string[] = [`=== GAME STATE (tick ${state.tick}) ===`, ""];
 
     // Alien
-    const alienRoom = getRoomAt(state.map, state.alien.x, state.alien.y);
+    const alienRoom = getRoomAtWorld(state.map, state.alien.x, state.alien.y);
     lines.push(`YOUR STATUS:`);
     lines.push(`  Room: ${alienRoom?.name ?? "unknown"} at (${state.alien.x},${state.alien.y})`);
     lines.push(`  HP: ${state.alien.hp}/${state.alien.maxHp}`);
@@ -377,7 +377,7 @@ export class DirectorClient {
         lines.push(`  ${p.nickname}: DEAD`);
         continue;
       }
-      const pRoom = getRoomAt(state.map, p.x, p.y);
+      const pRoom = getRoomAtWorld(state.map, p.x, p.y);
       lines.push(`  ${p.nickname}: ${pRoom?.name ?? "unknown"} at (${p.x},${p.y}), HP ${p.hp}/${p.maxHp}, ${p.weapon} (${p.ammo} ammo), ${p.state}`);
     }
     lines.push("");
@@ -386,15 +386,7 @@ export class DirectorClient {
     lines.push(`SHIP MAP (use room IDs for environment actions, e.g. "engine_bay" not "Engine Bay"):`);
     for (const room of state.map.rooms) {
       const lit = state.environment.lights.get(room.id) ? "lit" : "DARK";
-      const exits = room.exits
-        .map((e) => {
-          const doorKey = `${e.pos[0]},${e.pos[1]}`;
-          const doorState = state.environment.doors.get(doorKey);
-          const suffix = e.type === "door" && doorState ? ` [${doorState}]` : "";
-          return `${e.direction}→${e.toRoomId} (${e.type}${suffix})`;
-        })
-        .join(", ");
-      lines.push(`  ${room.name} [${lit}]: exits=[${exits}]`);
+      lines.push(`  ${room.name} (${room.id}) [${lit}]: ${room.width}x${room.height} tiles at (${room.x},${room.y})`);
     }
     lines.push("");
     lines.push(`  Power: ${state.environment.power ? "ON" : "OFF"}`);
