@@ -294,13 +294,15 @@ export function updateAlien(state: GameState, dt: number): void {
   if (alien.grounded) alien.jumpHeld = false;
 
   // Position update + collision (alien can pass through vents)
+  const doorStates = state.environment.doors as Map<string, string>;
   alien.x += alien.vx * dt;
   resolveCollisionX(
     alien,
     state.map.tiles,
     state.map.width,
     state.map.height,
-    true // is alien
+    true, // is alien
+    doorStates
   );
 
   alien.y += alien.vy * dt;
@@ -309,7 +311,8 @@ export function updateAlien(state: GameState, dt: number): void {
     state.map.tiles,
     state.map.width,
     state.map.height,
-    true
+    true,
+    doorStates
   );
 }
 

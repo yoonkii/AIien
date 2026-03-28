@@ -11,7 +11,7 @@
  *   - Snappy acceleration with air control
  */
 
-import type { PlayerState, InputState } from "./GameState";
+import type { PlayerState, InputState, DoorState } from "./GameState";
 import type { LevelMap } from "./GameState";
 import {
   JUMP_VELOCITY,
@@ -42,7 +42,8 @@ const HURT_DURATION = 0.5;
 export function updatePlayer(
   player: PlayerState,
   dt: number,
-  map: LevelMap
+  map: LevelMap,
+  doorStates?: Map<string, DoorState>
 ): void {
   if (player.state === "dead") return;
 
@@ -143,7 +144,7 @@ export function updatePlayer(
     map.width,
     map.height,
     false, // not alien
-    undefined // door states handled separately if needed
+    doorStates as Map<string, string> | undefined
   );
 
   // Y axis
@@ -154,7 +155,7 @@ export function updatePlayer(
     map.width,
     map.height,
     false,
-    undefined
+    doorStates as Map<string, string> | undefined
   );
 
   // Corner correction (when jumping into corners)

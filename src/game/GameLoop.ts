@@ -89,7 +89,7 @@ export class GameLoop {
 
     // ── 2. Update player physics ─────────────────────────────
     for (const player of this.state.players) {
-      updatePlayer(player, DT, this.state.map);
+      updatePlayer(player, DT, this.state.map, this.state.environment.doors);
     }
 
     // ── 3. Update alien physics ──────────────────────────────
